@@ -12,11 +12,12 @@ export const appendTemplateVariables = (datasource: CloudWatchDatasource, values
 ];
 
 export const filterMetricsQuery = (query: CloudWatchMetricsQuery): boolean => {
-  const { region, metricQueryType, metricEditorMode, expression, metricName, namespace, sqlExpression, statistic } =
-    query;
-  if (!region) {
-    return false;
-  }
+  const { expression, metricName, namespace, sqlExpression, statistic } = query;
+
+  const metricQueryType = query.metricQueryType ?? MetricQueryType.Search;
+  const metricEditorMode =
+    query.metricEditorMode ?? (expression ? MetricEditorMode.Code : MetricEditorMode.Builder);
+
   if (metricQueryType === MetricQueryType.Search && metricEditorMode === MetricEditorMode.Builder) {
     return !!namespace && !!metricName && !!statistic;
   } else if (metricQueryType === MetricQueryType.Search && metricEditorMode === MetricEditorMode.Code) {

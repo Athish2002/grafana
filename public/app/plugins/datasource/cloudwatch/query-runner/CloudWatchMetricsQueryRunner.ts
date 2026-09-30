@@ -11,6 +11,7 @@ import {
   type DataSourceInstanceSettings,
   dateTimeFormat,
   FieldType,
+  type QueryResultMetaNotice,
   rangeUtil,
   renderLegendFormat,
   type ScopedVars,
@@ -103,6 +104,11 @@ const displayAlert = (datasourceName: string, region: string) =>
     ],
   });
 
+export interface CloudWatchMetricsDataQueryRequest extends DataQueryRequest<CloudWatchQuery> {
+  defaultedRefIds?: Set<string>;
+  discardedQueries?: CloudWatchMetricsQuery[];
+}
+
 // This class handles execution of CloudWatch metrics query data queries
 export class CloudWatchMetricsQueryRunner extends CloudWatchRequest {
   debouncedThrottlingAlert: (datasourceName: string, region: string) => void = memoizedDebounce(displayAlert);
@@ -121,28 +127,47 @@ export class CloudWatchMetricsQueryRunner extends CloudWatchRequest {
       format: 'Z',
     }).replace(':', '');
 
-    const validMetricsQueries = metricQueries.filter(this.filterMetricQuery).map((q) => {
-      const migratedQuery = migrateMetricQuery(q);
-      const migratedAndInterpolatedQuery = this.interpolateMetricsQueryVariables(
-        migratedQuery,
-        options.scopedVars,
-        options.range
-      );
+    const defaultedRefIds = new Set<string>();
+    for (const q of metricQueries) {
+      if (!q.metricQueryType || !q.metricEditorMode || !q.region || q.region === 'default') {
+        if (q.refId) {
+          defaultedRefIds.add(q.refId);
+        }
+      }
+    }
 
-      return {
-        timezoneUTCOffset,
-        intervalMs: options.intervalMs,
-        maxDataPoints: options.maxDataPoints,
-        ...migratedAndInterpolatedQuery,
-        type:
-          migratedAndInterpolatedQuery.metricQueryType === MetricQueryType.PromQL ? 'promqlQuery' : 'timeSeriesQuery',
-        datasource: this.ref,
-      };
-    });
+    const migratedQueries = metricQueries.map((q) => migrateMetricQuery(q));
+    const discardedQueries = migratedQueries.filter((q) => !this.filterMetricQuery(q));
 
-    // No valid targets, return the empty result to save a round trip.
+    const validMetricsQueries = migratedQueries
+      .filter((q) => this.filterMetricQuery(q))
+      .map((migratedQuery) => {
+        const migratedAndInterpolatedQuery = this.interpolateMetricsQueryVariables(
+          migratedQuery,
+          options.scopedVars,
+          options.range
+        );
+
+        return {
+          timezoneUTCOffset,
+          intervalMs: options.intervalMs,
+          maxDataPoints: options.maxDataPoints,
+          ...migratedAndInterpolatedQuery,
+          type:
+            migratedAndInterpolatedQuery.metricQueryType === MetricQueryType.PromQL
+              ? 'promqlQuery'
+              : 'timeSeriesQuery',
+          datasource: this.ref,
+        };
+      });
+
+    // If all targets were discarded as incomplete, emit refId-scoped errors so the user receives a visible message rather than silent "No data"
     if (isEmpty(validMetricsQueries)) {
-      return of({ data: [] });
+      const errors: DataQueryError[] = discardedQueries.map((q) => ({
+        refId: q.refId,
+        message: `Query "${q.refId}" is incomplete: missing required query fields.`,
+      }));
+      return of({ data: [], errors: errors.length ? errors : undefined });
     }
 
     const timeSeriesTargets = validMetricsQueries.filter((q) => q.type === 'timeSeriesQuery');
@@ -152,7 +177,13 @@ export class CloudWatchMetricsQueryRunner extends CloudWatchRequest {
     if (timeSeriesTargets.length) {
       responses.push(
         this.performTimeSeriesQuery(
-          { ...options, requestId: options.requestId + '-metrics', targets: timeSeriesTargets },
+          {
+            ...options,
+            requestId: options.requestId + '-metrics',
+            targets: timeSeriesTargets,
+            defaultedRefIds,
+            discardedQueries,
+          } as CloudWatchMetricsDataQueryRequest,
           queryFn
         )
       );
@@ -161,7 +192,13 @@ export class CloudWatchMetricsQueryRunner extends CloudWatchRequest {
     if (promqlTargets.length) {
       responses.push(
         this.performTimeSeriesQuery(
-          { ...options, requestId: options.requestId + '-promql', targets: promqlTargets },
+          {
+            ...options,
+            requestId: options.requestId + '-promql',
+            targets: promqlTargets,
+            defaultedRefIds,
+            discardedQueries,
+          } as CloudWatchMetricsDataQueryRequest,
           queryFn
         )
       );
@@ -242,10 +279,81 @@ export class CloudWatchMetricsQueryRunner extends CloudWatchRequest {
         }
 
         const transformed = applyPromQLTransform({ ...res, data: dataframes }, request);
+        const transformedData = transformed.data;
+
+        // Maintain enrichThrottlingErrorMessages and ensure real AWS errors are never masked
+        const enrichedErrors = [...(this.enrichThrottlingErrorMessages(request, res.errors) ?? [])];
+        const existingErrorRefIds = new Set(enrichedErrors.map((e) => e.refId).filter(Boolean));
+
+        const metricsReq = request as CloudWatchMetricsDataQueryRequest;
+        const defaultedRefIds = new Set(metricsReq.defaultedRefIds ?? []);
+        const discardedQueries = [...(metricsReq.discardedQueries ?? [])];
+
+        // Also check request.targets directly in case performTimeSeriesQuery was called standalone
+        for (const target of request.targets) {
+          if (isCloudWatchMetricsQuery(target)) {
+            if (!this.filterMetricQuery(target)) {
+              if (!discardedQueries.some((d) => d.refId === target.refId)) {
+                discardedQueries.push(target);
+              }
+            } else if (
+              !target.metricQueryType ||
+              !target.metricEditorMode ||
+              !target.region ||
+              target.region === 'default'
+            ) {
+              if (target.refId) {
+                defaultedRefIds.add(target.refId);
+              }
+            }
+          }
+        }
+
+        // Emit refId-scoped errors for any queries that were discarded as incomplete
+        for (const discarded of discardedQueries) {
+          const refId = discarded.refId;
+          if (refId && !existingErrorRefIds.has(refId)) {
+            existingErrorRefIds.add(refId);
+            enrichedErrors.push({
+              refId,
+              message: `CloudWatch query "${refId}" is incomplete: missing required fields.`,
+            });
+          }
+        }
+
+        // For queries with defaulted or missing fields:
+        const returnedFrameRefIds = new Set(transformedData.map((f) => f.refId).filter(Boolean));
+        for (const refId of defaultedRefIds) {
+          if (returnedFrameRefIds.has(refId)) {
+            // Data was returned: emit non-blocking info notice in DataFrame.meta.notices
+            for (const frame of transformedData) {
+              if (frame.refId === refId) {
+                const notice: QueryResultMetaNotice = {
+                  severity: 'info',
+                  text: `Query "${refId}" is using default query configuration.`,
+                };
+                frame.meta = {
+                  ...frame.meta,
+                  notices: [...(frame.meta?.notices ?? []), notice],
+                };
+              }
+            }
+          } else {
+            // No data was returned: emit refId-scoped non-blocking notice/error so user does not see silent "No data"
+            if (!existingErrorRefIds.has(refId)) {
+              existingErrorRefIds.add(refId);
+              enrichedErrors.push({
+                refId,
+                message: `Query "${refId}" returned no data with default configuration. Verify metric name, namespace, or region.`,
+              });
+            }
+          }
+        }
+
         return {
-          data: transformed.data,
+          data: transformedData,
           // DataSourceWithBackend will not throw an error, instead it will return "errors" field along with the response
-          errors: this.enrichThrottlingErrorMessages(request, res.errors),
+          errors: enrichedErrors.length ? enrichedErrors : undefined,
         };
       }),
       catchError((err: unknown) => {

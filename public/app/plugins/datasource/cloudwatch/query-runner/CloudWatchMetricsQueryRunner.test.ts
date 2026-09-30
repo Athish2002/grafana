@@ -536,6 +536,92 @@ describe('CloudWatchMetricsQueryRunner', () => {
         ]);
       });
     });
+
+    it('executes queries missing metricQueryType, metricEditorMode, or region and migrates defaults', async () => {
+      const unmigratedQueries: CloudWatchMetricsQuery[] = [
+        {
+          id: '',
+          refId: 'A',
+          namespace: 'AWS/EC2',
+          metricName: 'CPUUtilization',
+          statistic: 'Average',
+          period: '300s',
+          queryMode: 'Metrics',
+        } as CloudWatchMetricsQuery,
+      ];
+
+      const { runner, request, queryMock, instanceSettings } = setupMockedMetricsQueryRunner({
+        response: toDataQueryResponse(responseFromBEQuery),
+      });
+
+      await expect(runner.handleMetricQueries(unmigratedQueries, request, queryMock)).toEmitValuesWith((received) => {
+        expect(queryMock).toHaveBeenCalledTimes(1);
+        const sentRequest = queryMock.mock.calls[0][0];
+        const sentTarget = sentRequest.targets[0];
+        expect(sentTarget.metricQueryType).toBe(MetricQueryType.Search);
+        expect(sentTarget.metricEditorMode).toBe(MetricEditorMode.Builder);
+        expect(sentTarget.region).toBe(instanceSettings.jsonData.defaultRegion);
+        expect(sentTarget.refId).toBe('A');
+
+        const result = received[0];
+        expect(result.data.length).toBe(1);
+        expect(result.data[0].meta?.notices?.[0]?.text).toContain('default query configuration');
+      });
+    });
+
+    it('emits a refId-scoped notice/error when a defaulted query returns no data', async () => {
+      const unmigratedQueries: CloudWatchMetricsQuery[] = [
+        {
+          id: '',
+          refId: 'A',
+          namespace: 'AWS/EC2',
+          metricName: 'CPUUtilization',
+          statistic: 'Average',
+          period: '300s',
+          queryMode: 'Metrics',
+        } as CloudWatchMetricsQuery,
+      ];
+
+      const { runner, request, queryMock } = setupMockedMetricsQueryRunner({
+        response: of({ data: [] }),
+      });
+
+      await expect(runner.handleMetricQueries(unmigratedQueries, request, queryMock)).toEmitValuesWith((received) => {
+        const result = received[0];
+        expect(result.data).toEqual([]);
+        expect(result.errors).toEqual([
+          {
+            refId: 'A',
+            message: expect.stringContaining('Query "A" returned no data with default configuration'),
+          },
+        ]);
+      });
+    });
+
+    it('emits refId-scoped error when incomplete queries are discarded', async () => {
+      const incompleteQueries: CloudWatchMetricsQuery[] = [
+        {
+          id: '',
+          refId: 'A',
+          queryMode: 'Metrics',
+        } as CloudWatchMetricsQuery,
+      ];
+
+      const { runner, request, queryMock } = setupMockedMetricsQueryRunner();
+
+      await expect(runner.handleMetricQueries(incompleteQueries, request, queryMock)).toEmitValuesWith((received) => {
+        expect(queryMock).not.toHaveBeenCalled();
+        const result = received[0];
+        expect(result.data).toEqual([]);
+        expect(result.errors).toEqual([
+          {
+            refId: 'A',
+            message: expect.stringContaining('Query "A" is incomplete'),
+          },
+        ]);
+      });
+    });
+
     it('interpolates PromQL expression variables via handleMetricQueries', async () => {
       const { runner, queryMock, request } = setupMockedMetricsQueryRunner({
         variables: [metricVariable],
@@ -1228,6 +1314,36 @@ describe('CloudWatchMetricsQueryRunner', () => {
         baseQuery.sqlExpression = 'select SUM(CPUUtilization) from "AWS/EC2"';
         const valid = runner.filterMetricQuery(baseQuery);
         expect(valid).toBeTruthy();
+      });
+    });
+
+    describe('queries missing metricQueryType, metricEditorMode, or region', () => {
+      beforeEach(() => {
+        baseQuery = {
+          ...baseQuery,
+          namespace: 'AWS/EC2',
+          metricName: 'CPUUtilization',
+          statistic: 'Average',
+        };
+      });
+
+      it('allows queries missing metricQueryType by falling back to Search', () => {
+        const query = { ...baseQuery, metricQueryType: undefined, metricEditorMode: MetricEditorMode.Builder };
+        expect(runner.filterMetricQuery(query)).toBeTruthy();
+      });
+
+      it('allows queries missing metricEditorMode by falling back to Builder or Code', () => {
+        const builderQuery = { ...baseQuery, metricEditorMode: undefined };
+        expect(runner.filterMetricQuery(builderQuery)).toBeTruthy();
+
+        const codeQuery = { ...baseQuery, metricEditorMode: undefined, expression: 'SEARCH()' };
+        expect(runner.filterMetricQuery(codeQuery)).toBeTruthy();
+      });
+
+      it('allows queries with missing, empty, or "default" region', () => {
+        expect(runner.filterMetricQuery({ ...baseQuery, region: undefined })).toBeTruthy();
+        expect(runner.filterMetricQuery({ ...baseQuery, region: '' })).toBeTruthy();
+        expect(runner.filterMetricQuery({ ...baseQuery, region: 'default' })).toBeTruthy();
       });
     });
   });

@@ -256,5 +256,19 @@ describe('QueryEditor', () => {
         expect.objectContaining({ metricEditorMode: MetricEditorMode.Builder })
       );
     });
+
+    it('defaults metricQueryType and metricEditorMode on mount when missing from raw query', async () => {
+      const props = setup({
+        metricQueryType: undefined,
+        metricEditorMode: undefined,
+      });
+      render(<HeaderHarness {...props} />);
+
+      expect(await screen.findByText('Metric Search')).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: 'Builder' })).toBeChecked();
+      expect(screen.getByRole('radio', { name: 'Code' })).not.toBeChecked();
+      expect(screen.getAllByLabelText('Namespace').length).toBeGreaterThan(0);
+    });
   });
 });
+

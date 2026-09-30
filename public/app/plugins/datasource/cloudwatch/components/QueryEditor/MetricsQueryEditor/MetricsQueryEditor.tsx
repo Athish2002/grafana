@@ -51,32 +51,32 @@ export const MetricsQueryEditor = (props: Props) => {
   const [showPromQLExplain, setShowPromQLExplain] = useState(false);
   const promQLExplainSwitchId = useId();
   const styles = useStyles2(getStyles);
-  const migratedQuery = useMigratedMetricsQuery(query, props.onChange);
+  const currentQuery = useMigratedMetricsQuery(props.query, onChange);
 
   const onEditorModeChange = useCallback(
     (newMetricEditorMode: MetricEditorMode) => {
       if (
         codeEditorIsDirty &&
-        query.metricQueryType === MetricQueryType.Insights &&
-        query.metricEditorMode === MetricEditorMode.Code
+        currentQuery.metricQueryType === MetricQueryType.Insights &&
+        currentQuery.metricEditorMode === MetricEditorMode.Code
       ) {
         setShowConfirm(true);
         return;
       }
       if (
-        query.metricQueryType === MetricQueryType.PromQL &&
-        query.metricEditorMode === MetricEditorMode.Code &&
+        currentQuery.metricQueryType === MetricQueryType.PromQL &&
+        currentQuery.metricEditorMode === MetricEditorMode.Code &&
         newMetricEditorMode === MetricEditorMode.Builder
       ) {
-        const parseResult = buildVisualQueryFromString(query.promqlExpression ?? '');
+        const parseResult = buildVisualQueryFromString(currentQuery.promqlExpression ?? '');
         if (parseResult.errors.length > 0) {
           setPromQLParseModalOpen(true);
           return;
         }
       }
-      onChange({ ...query, metricEditorMode: newMetricEditorMode });
+      onChange({ ...currentQuery, metricEditorMode: newMetricEditorMode });
     },
-    [setShowConfirm, onChange, codeEditorIsDirty, query]
+    [setShowConfirm, onChange, codeEditorIsDirty, currentQuery]
   );
 
   const updateAccounIdOnMount = () => {
@@ -91,25 +91,30 @@ export const MetricsQueryEditor = (props: Props) => {
   useEffect(updateAccounIdOnMount, [datasource, onChange, query]);
 
   useEffect(() => {
+    const selectedMetricQueryType = currentQuery.metricQueryType ?? MetricQueryType.Search;
+    const selectedMetricEditorMode =
+      currentQuery.metricEditorMode ??
+      (currentQuery.expression ? MetricEditorMode.Code : MetricEditorMode.Builder);
+
     extraHeaderElementLeft?.(
       <>
         <InlineSelect
           aria-label="Metric editor mode"
-          value={metricEditorModes.find((m) => m.value === query.metricQueryType)}
+          value={metricEditorModes.find((m) => m.value === selectedMetricQueryType) ?? metricEditorModes[0]}
           options={metricEditorModes}
           onChange={({ value }) => {
             if (
               codeEditorIsDirty &&
-              query.metricQueryType === MetricQueryType.Search &&
-              query.metricEditorMode === MetricEditorMode.Builder
+              currentQuery.metricQueryType === MetricQueryType.Search &&
+              currentQuery.metricEditorMode === MetricEditorMode.Builder
             ) {
               setShowConfirm(true);
               return;
             }
-            onChange({ ...query, metricQueryType: value });
+            onChange({ ...currentQuery, metricQueryType: value });
           }}
         />
-        {query.metricQueryType === MetricQueryType.PromQL && (
+        {currentQuery.metricQueryType === MetricQueryType.PromQL && (
           <Stack direction="row" gap={1} alignItems="center">
             <label htmlFor={promQLExplainSwitchId} className={styles.promQLExplainLabel}>
               Explain
@@ -129,7 +134,7 @@ export const MetricsQueryEditor = (props: Props) => {
         <RadioButtonGroup
           options={editorModes}
           size="sm"
-          value={query.metricEditorMode}
+          value={selectedMetricEditorMode}
           onChange={onEditorModeChange}
         />
         <ConfirmModal
@@ -142,7 +147,7 @@ export const MetricsQueryEditor = (props: Props) => {
             setShowConfirm(false);
             setCodeEditorIsDirty(false);
             onChange({
-              ...query,
+              ...currentQuery,
               ...DEFAULT_METRICS_QUERY,
               metricQueryType: MetricQueryType.Insights,
               metricEditorMode: MetricEditorMode.Builder,
@@ -158,7 +163,7 @@ export const MetricsQueryEditor = (props: Props) => {
           dismissText="Cancel"
           onConfirm={() => {
             setPromQLParseModalOpen(false);
-            onChange({ ...query, metricEditorMode: MetricEditorMode.Builder });
+            onChange({ ...currentQuery, metricEditorMode: MetricEditorMode.Builder });
           }}
           onDismiss={() => setPromQLParseModalOpen(false)}
         />
@@ -170,7 +175,7 @@ export const MetricsQueryEditor = (props: Props) => {
       extraHeaderElementRight?.(undefined);
     };
   }, [
-    query,
+    currentQuery,
     codeEditorIsDirty,
     datasource,
     onChange,
@@ -187,59 +192,59 @@ export const MetricsQueryEditor = (props: Props) => {
   return (
     <>
       <Space v={0.5} />
-      {query.metricQueryType === MetricQueryType.Search && (
+      {currentQuery.metricQueryType === MetricQueryType.Search && (
         <>
-          {query.metricEditorMode === MetricEditorMode.Builder && (
+          {currentQuery.metricEditorMode === MetricEditorMode.Builder && (
             <MetricStatEditor
               {...props}
-              refId={query.refId}
-              metricStat={query}
+              refId={currentQuery.refId}
+              metricStat={currentQuery}
               onChange={(metricStat: MetricStat) => {
                 if (!codeEditorIsDirty) {
                   setCodeEditorIsDirty(true);
                 }
-                props.onChange({ ...query, ...metricStat });
+                onChange({ ...currentQuery, ...metricStat });
               }}
             ></MetricStatEditor>
           )}
-          {query.metricEditorMode === MetricEditorMode.Code && (
+          {currentQuery.metricEditorMode === MetricEditorMode.Code && (
             <MathExpressionQueryField
-              expression={query.expression ?? ''}
-              onChange={(expression) => props.onChange({ ...query, expression })}
+              expression={currentQuery.expression ?? ''}
+              onChange={(expression) => onChange({ ...currentQuery, expression })}
               datasource={datasource}
             ></MathExpressionQueryField>
           )}
         </>
       )}
-      {query.metricQueryType === MetricQueryType.Insights && (
+      {currentQuery.metricQueryType === MetricQueryType.Insights && (
         <>
-          {query.metricEditorMode === MetricEditorMode.Code && (
+          {currentQuery.metricEditorMode === MetricEditorMode.Code && (
             <SQLCodeEditor
-              region={query.region}
-              sql={query.sqlExpression ?? ''}
+              region={currentQuery.region}
+              sql={currentQuery.sqlExpression ?? ''}
               onChange={(sqlExpression) => {
                 if (!codeEditorIsDirty) {
                   setCodeEditorIsDirty(true);
                 }
-                props.onChange({ ...migratedQuery, sqlExpression });
+                onChange({ ...currentQuery, sqlExpression });
               }}
               datasource={datasource}
             />
           )}
 
-          {query.metricEditorMode === MetricEditorMode.Builder && (
+          {currentQuery.metricEditorMode === MetricEditorMode.Builder && (
             <>
-              <SQLBuilderEditor query={query} onChange={props.onChange} datasource={datasource}></SQLBuilderEditor>
+              <SQLBuilderEditor query={currentQuery} onChange={onChange} datasource={datasource}></SQLBuilderEditor>
             </>
           )}
         </>
       )}
-      {query.metricQueryType === MetricQueryType.PromQL && (
+      {currentQuery.metricQueryType === MetricQueryType.PromQL && (
         <>
-          {query.metricEditorMode === MetricEditorMode.Code && (
+          {currentQuery.metricEditorMode === MetricEditorMode.Code && (
             <PromQLCodeEditor
-              query={query}
-              onChange={props.onChange}
+              query={currentQuery}
+              onChange={onChange}
               onRunQuery={props.onRunQuery}
               datasource={datasource}
               timeRange={props.range ?? getDefaultTimeRange()}
@@ -248,10 +253,10 @@ export const MetricsQueryEditor = (props: Props) => {
               data={props.data}
             />
           )}
-          {query.metricEditorMode === MetricEditorMode.Builder && (
+          {currentQuery.metricEditorMode === MetricEditorMode.Builder && (
             <PromQLBuilderEditor
-              query={query}
-              onChange={props.onChange}
+              query={currentQuery}
+              onChange={onChange}
               onRunQuery={props.onRunQuery}
               datasource={datasource}
               timeRange={props.range ?? getDefaultTimeRange()}
@@ -262,7 +267,7 @@ export const MetricsQueryEditor = (props: Props) => {
           )}
         </>
       )}
-      {query.metricQueryType !== MetricQueryType.PromQL && (
+      {currentQuery.metricQueryType !== MetricQueryType.PromQL && (
         <>
           <Space v={0.5} />
           <EditorRow>
@@ -271,25 +276,25 @@ export const MetricsQueryEditor = (props: Props) => {
               width={26}
               optional
               tooltip="ID can be used to reference other queries in math expressions. The ID can include numbers, letters, and underscore, and must start with a lowercase letter."
-              invalid={!!query.id && !/^$|^[a-z][a-zA-Z0-9_]*$/.test(query.id)}
+              invalid={!!currentQuery.id && !/^$|^[a-z][a-zA-Z0-9_]*$/.test(currentQuery.id)}
             >
               <Input
-                id={`${query.refId}-cloudwatch-metric-query-editor-id`}
+                id={`${currentQuery.refId}-cloudwatch-metric-query-editor-id`}
                 onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                  onChange({ ...migratedQuery, id: event.target.value })
+                  onChange({ ...currentQuery, id: event.target.value })
                 }
                 type="text"
-                value={query.id}
+                value={currentQuery.id}
               />
             </EditorField>
 
             <EditorField label="Period" width={26} tooltip="Minimum interval between points in seconds.">
               <Input
-                id={`${query.refId}-cloudwatch-metric-query-editor-period`}
-                value={query.period || ''}
+                id={`${currentQuery.refId}-cloudwatch-metric-query-editor-period`}
+                value={currentQuery.period || ''}
                 placeholder="auto"
                 onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                  onChange({ ...migratedQuery, period: event.target.value })
+                  onChange({ ...currentQuery, period: event.target.value })
                 }
               />
             </EditorField>
@@ -302,8 +307,8 @@ export const MetricsQueryEditor = (props: Props) => {
             >
               <DynamicLabelsField
                 width={52}
-                label={migratedQuery.label ?? ''}
-                onChange={(label) => props.onChange({ ...query, label })}
+                label={currentQuery.label ?? ''}
+                onChange={(label) => onChange({ ...currentQuery, label })}
               ></DynamicLabelsField>
             </EditorField>
           </EditorRow>

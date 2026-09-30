@@ -56,11 +56,11 @@ export function migrateMultipleStatsAnnotationQuery(
 }
 
 export function migrateCloudWatchQuery(query: CloudWatchMetricsQuery) {
-  if (!query.hasOwnProperty('metricQueryType')) {
+  if (!query.hasOwnProperty('metricQueryType') || query.metricQueryType === undefined) {
     query.metricQueryType = MetricQueryType.Search;
   }
 
-  if (!query.hasOwnProperty('metricEditorMode')) {
+  if (!query.hasOwnProperty('metricEditorMode') || query.metricEditorMode === undefined) {
     if (query.metricQueryType === MetricQueryType.Insights) {
       query.metricEditorMode = MetricEditorMode.Code;
     } else {
